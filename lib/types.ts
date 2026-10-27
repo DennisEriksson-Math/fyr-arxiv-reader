@@ -12,6 +12,12 @@ export interface Paper {
   change?: PaperChange;
 }
 
+export interface ProfileSource {
+  kind: "keyword" | "author";
+  value: string;
+  documents: Array<{ name: string; excerpt: string }>;
+}
+
 export interface Profile {
   broad: string[];
   sharp: string[];
@@ -20,6 +26,8 @@ export interface Profile {
   exclude_ids: string[];
   context: string;
   weights: Record<string, number>;
+  /** Local-only cleaned excerpts. Never include these in model requests. */
+  sources?: ProfileSource[];
 }
 
 export interface RankedPaper extends Paper {

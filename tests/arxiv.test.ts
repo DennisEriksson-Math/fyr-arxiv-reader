@@ -62,3 +62,30 @@ test("feedback boost is positive-only and capped; export retains provenance", ()
   const md = exportMarkdown([{ ...paper("math/0601234v2", "A [paper]"), matched: ["geometry"], author_match: true, caveat: "Abstract only" }]);
   assert.match(md, /https:\/\/arxiv.org\/abs\/math\/0601234/); assert.match(md, /Matched: geometry/); assert.match(md, /Abstract only/);
 });
+
+test("provenance survives persistence but prunes removed interests and bounds imported metadata", () => {
+  const values = Array.from({ length: 110 }, (_, i) => `topic ${i}`);
+  const imported = normalizeProfile({ ...defaultProfile(), broad: values, authors: ["Noether, Emmy"], sources: [
+    { kind: "author", value: "Emmy Noether", documents: [{ name: "private/paper.bib", excerpt: "Noether, Emmy" }] },
+    { kind: "keyword", value: "removed topic", documents: [{ name: "missing.txt", excerpt: "removed topic" }] },
+    ...values.map(value => ({ kind: "keyword", value, documents: Array.from({ length: 7 }, (_, i) => ({ name: `private/${i}-${"x".repeat(250)}.txt`, excerpt: `${value} ${"a".repeat(500)}` })) })),
+  ] });
+  assert.equal(imported.sources.length, 100);
+  assert.equal(imported.sources[0].value, "Noether, Emmy");
+  assert.equal(imported.sources[0].documents[0].name, "paper.bib");
+  assert.ok(imported.sources.every((source: { documents: Array<{name: string;excerpt:string}> }) => source.documents.length <= 3 && source.documents.every(doc => !doc.name.includes("/") && doc.name.length <= 200 && doc.excerpt.length <= 300)));
+  const persisted = normalizeProfile(JSON.parse(JSON.stringify(imported)));
+  assert.deepEqual(persisted, imported);
+  const edited = normalizeProfile({ ...persisted, broad: [], authors: [] });
+  assert.ok(!("sources" in edited));
+  assert.ok(!("sources" in defaultProfile()));
+});
+
+test("phrases cannot match across title and abstract boundaries", () => {
+  const papers = [paper("2610.00001", "A mirror", { abstract: "Symmetry appears." })];
+  const positive = rankPartition(papers, profile({ sharp: ["mirror symmetry"] }));
+  assert.equal(positive.ranked.length, 0);
+  assert.equal(positive.unmatched.length, 1);
+  const negative = rankPartition(papers, profile({ broad: ["mirror"], negative: ["mirror symmetry"] }));
+  assert.equal(negative.ranked.length, 1);
+});

@@ -1,7 +1,8 @@
 /** Local, reviewable interest suggestions inspired by Fyr's title-based profile suggestions.
  * Documents never leave the browser. No LLM is used by this module.
  */
-import type { Profile } from "./types";
+import type { Profile, ProfileSource } from "./types";
+import { interestKey, normalizeProfile, normalizeText } from "./arxiv.ts";
 import { parse as parseHtmlTree, type DefaultTreeAdapterTypes } from "parse5";
 
 export interface ImportReport {
@@ -162,6 +163,73 @@ function phraseCounts(text: string): Map<string, number> {
   return counts;
 }
 
+/** A bounded slice of cleaned extracted text containing the actual matched phrase. */
+function supportingExcerpt(text: string, value: string): string | undefined {
+  const clean = cleanSpace(text);
+  const tokens = [...clean.matchAll(/[\p{L}\p{N}]+/gu)];
+  const wanted = normalizeText(value).split(" ").filter(Boolean);
+  if (!wanted.length) return undefined;
+  const normalized = tokens.map(token => normalizeText(token[0]));
+  for (let i = 0; i + wanted.length <= tokens.length; i++) {
+    if (!wanted.every((word, offset) => word === normalized[i + offset])) continue;
+    const start = tokens[i].index!, last = tokens[i + wanted.length - 1];
+    const end = last.index! + last[0].length;
+    const windowStart = Math.max(0, Math.min(start - 80, end - 300));
+    return clean.slice(windowStart, windowStart + 300).trim();
+  }
+  return undefined;
+}
+
+function authorExcerpt(doc: DocumentText, author: string): string | undefined {
+  const key = interestKey("author", author);
+  const structured = [...bibFields(doc.text, "author"), ...bracedCommands(doc.text, "author"), ...(doc.authors || [])];
+  for (const field of structured) {
+    if (!splitAuthorList(field).some(name => interestKey("author", name) === key)) continue;
+    const clean = cleanSpace(stripTex(field));
+    const direct = supportingExcerpt(clean, author);
+    if (direct) return direct;
+    // BibTeX often stores surname first. Keep its actual order rather than inventing a quote.
+    const words = author.split(" ");
+    if (words.length > 1) {
+      const reversed = supportingExcerpt(clean, `${words.slice(1).join(" ")} ${words[0]}`);
+      if (reversed) return reversed;
+    }
+    // A selected structured field is itself evidence, but keep the segment naming this person.
+    for (const segment of field.split(/\\and\b|\band\b|;|\\\\|\n/)) {
+      const name = probableName(segment);
+      if (name && interestKey("author", name) === key) return cleanSpace(stripTex(segment)).slice(0, 300);
+    }
+  }
+  return supportingExcerpt(doc.firstPage || doc.text.slice(0, 2500), author);
+}
+
+/** Add reviewed suggestions without discarding earlier choices, exclusions or learned weights. */
+export function mergeImportedProfile(existing: Profile, incoming: Profile): Profile {
+  const current = normalizeProfile(existing), added = normalizeProfile(incoming);
+  const unique = (values: string[], kind: "keyword" | "author") => {
+    const seen = new Set<string>();
+    return values.filter(value => {
+      const key = interestKey(kind, value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+  };
+  // Existing tier assignments win; a fresh precise phrase wins over a fresh broad duplicate.
+  const existingKeywords = new Set([...current.broad, ...current.sharp].map(value => interestKey("keyword", value)));
+  const freshSharp = added.sharp.filter(value => !existingKeywords.has(interestKey("keyword", value)));
+  const preciseKeys = new Set(freshSharp.map(value => interestKey("keyword", value)));
+  const freshBroad = added.broad.filter(value => !existingKeywords.has(interestKey("keyword", value)) && !preciseKeys.has(interestKey("keyword", value)));
+  const sources = [...(current.sources || []), ...(added.sources || [])];
+  return normalizeProfile({
+    ...current,
+    broad: unique([...current.broad, ...freshBroad], "keyword"),
+    sharp: unique([...current.sharp, ...freshSharp], "keyword"),
+    authors: unique([...current.authors, ...added.authors], "author"),
+    context: current.context || added.context,
+    ...(sources.length ? { sources } : {}),
+  });
+}
+
 export function analyzeDocumentTexts(input: DocumentText[]): ProfileImportResult {
   const warnings = ["These are local keyword and author suggestions, not an AI assessment. Review them before using the profile.",
     "Suggested authors can include you and your coauthors. Remove anyone you do not want to follow."];
@@ -178,9 +246,11 @@ export function analyzeDocumentTexts(input: DocumentText[]): ProfileImportResult
   if (total >= MAX_TEXT) warnings.push("The text limit of one million characters was reached.");
   const stats = new Map<string, { count: number; documents: number; titles: number }>();
   const titleList: string[] = [], authors: string[] = [];
+  const material: Array<{ doc: DocumentText; titles: string[]; body: string; authors: string[] }> = [];
   for (const doc of docs) {
-    const titles = titlesFrom(doc); titleList.push(...titles); authors.push(...authorsFrom(doc));
+    const titles = titlesFrom(doc), foundAuthors = authorsFrom(doc); titleList.push(...titles); authors.push(...foundAuthors);
     const body = /\.(?:tex|bib|bibtex)$/i.test(doc.name) ? stripTex(doc.text) : doc.text;
+    material.push({ doc, titles, body, authors: foundAuthors });
     const counts = phraseCounts(body), titleCounts = phraseCounts(titles.join(". "));
     for (const phrase of new Set([...counts.keys(), ...titleCounts.keys()])) {
       const value = stats.get(phrase) || { count: 0, documents: 0, titles: 0 };
@@ -207,7 +277,29 @@ export function analyzeDocumentTexts(input: DocumentText[]): ProfileImportResult
   for (const author of authors) if (!authorMap.has(normalize(author))) authorMap.set(normalize(author), author);
   const profile: Profile = { broad, sharp, authors: [...authorMap.values()].slice(0, 60), negative: [], exclude_ids: [], weights: {},
     context: titleList.length ? `Topics suggested from these document titles:\n${[...new Set(titleList)].slice(0, 20).map(title => `- ${title}`).join("\n")}`.slice(0, 16000) : "" };
-  return { profile, report: { files: docs.length, characters: total, warnings, sourceNames: docs.map(doc => doc.name) } };
+  const sources: ProfileSource[] = [];
+  for (const value of [...new Set([...profile.sharp, ...profile.broad])]) {
+    const documents: ProfileSource["documents"] = [];
+    for (const item of material) {
+      const excerpt = item.titles.map(title => supportingExcerpt(title, value)).find(Boolean) || supportingExcerpt(item.body, value);
+      if (excerpt) documents.push({ name: item.doc.name, excerpt });
+      if (documents.length >= 3) break;
+    }
+    if (documents.length) sources.push({ kind: "keyword", value, documents });
+  }
+  for (const value of profile.authors) {
+    const documents: ProfileSource["documents"] = [];
+    for (const item of material) {
+      if (!item.authors.some(author => interestKey("author", author) === interestKey("author", value))) continue;
+      const excerpt = authorExcerpt(item.doc, value);
+      if (excerpt) documents.push({ name: item.doc.name, excerpt });
+      if (documents.length >= 3) break;
+    }
+    if (documents.length) sources.push({ kind: "author", value, documents });
+  }
+  if (sources.length) profile.sources = sources;
+  const normalizedProfile = normalizeProfile(profile);
+  return { profile: normalizedProfile, report: { files: docs.length, characters: total, warnings, sourceNames: docs.map(doc => doc.name) } };
 }
 
 /** Parse a syntax tree only: no DOM, scripts, resource elements or network side effects. */

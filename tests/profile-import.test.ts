@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-const { analyzeDocumentTexts, analyzeDocuments, extractHtmlText, extractPdfWithEngine } = await import(new URL("../lib/profile-import.ts", import.meta.url).href);
+const { analyzeDocumentTexts, analyzeDocuments, extractHtmlText, extractPdfWithEngine, mergeImportedProfile } = await import(new URL("../lib/profile-import.ts", import.meta.url).href);
 
 test("local suggestions emphasize recurring title phrases and keep exclusions blank", () => {
   const result = analyzeDocumentTexts([
@@ -120,4 +120,43 @@ test("real PDF v6 extraction reads a synthetic paper, metadata and authors, then
   const result = analyzeDocumentTexts([doc]);
   assert.ok(result.profile.sharp.includes("mirror symmetry"));
   assert.ok(destroyed);
+});
+
+test("imported keyword and author evidence comes from the actual supporting documents", () => {
+  const doc1 = { name: "private/mirror.md", text: "# Mirror symmetry for complete intersections\nMirror symmetry studies period integrals. Mirror symmetry connects complete intersections." };
+  const doc2 = { name: "private/references.bib", text: "@article{key,\n author = {Noether, Emmy and David Hilbert},\n title = {Mirror symmetry and period integrals}\n}" };
+  const result = analyzeDocumentTexts([doc1, doc2]);
+  const source = result.profile.sources.find((s: {kind:string;value:string}) => s.kind === "keyword" && s.value === "mirror symmetry");
+  assert.ok(source);
+  assert.deepEqual(source.documents.map((d: {name:string}) => d.name), ["mirror.md", "references.bib"]);
+  assert.ok(source.documents.every((d: {excerpt:string}) => /mirror symmetry/i.test(d.excerpt)));
+  const author = result.profile.sources.find((s: {kind:string;value:string}) => s.kind === "author" && s.value === "Emmy Noether");
+  assert.ok(author);
+  assert.equal(author.documents[0].name, "references.bib");
+  assert.match(author.documents[0].excerpt, /Noether, Emmy/);
+  assert.ok(!author.documents.some((d: {name:string}) => d.name === "mirror.md"));
+  assert.ok(result.profile.sources.some((s: {kind:string;value:string}) => s.kind === "keyword" && result.profile.broad.includes(s.value)));
+});
+
+test("ongoing import merges normalized interests and evidence while preserving existing choices", () => {
+  const existing = {
+    broad: ["Geometry"], sharp: ["Gromov–Witten"], authors: ["Noether, Emmy"],
+    negative: ["finance"], exclude_ids: ["math/0601234"], context: "My carefully written research context.", weights: { Geometry: 4 },
+    sources: [{ kind: "keyword", value: "Gromov–Witten", documents: [{ name: "first.md", excerpt: "Gromov–Witten invariants" }] }],
+  };
+  const incoming = {
+    broad: ["geometry", "gromov--witten", "topology"], sharp: ["Mirror symmetry", "mirror SYMMETRY"], authors: ["Emmy Noether", "David Hilbert"],
+    negative: ["different exclusion"], exclude_ids: ["2610.00002"], context: "Automatic document titles", weights: { Geometry: 100 },
+    sources: [{ kind: "keyword", value: "gromov--witten", documents: [{ name: "second.md", excerpt: "Gromov--Witten invariants" }] },
+      { kind: "keyword", value: "Mirror symmetry", documents: [{ name: "new.md", excerpt: "Mirror symmetry" }] }],
+  };
+  const merged = mergeImportedProfile(existing, incoming);
+  assert.deepEqual(merged.broad, ["Geometry", "topology"]);
+  assert.deepEqual(merged.sharp, ["Gromov–Witten", "Mirror symmetry"]);
+  assert.deepEqual(merged.authors, ["Noether, Emmy", "David Hilbert"]);
+  assert.deepEqual(merged.negative, existing.negative); assert.deepEqual(merged.exclude_ids, existing.exclude_ids);
+  assert.deepEqual(merged.weights, existing.weights); assert.equal(merged.context, existing.context);
+  assert.deepEqual(merged.sources[0].documents.map((d: {name:string}) => d.name), ["first.md", "second.md"]);
+  assert.deepEqual(mergeImportedProfile(merged, incoming), merged);
+  assert.equal(mergeImportedProfile({ ...existing, context: "" }, incoming).context, incoming.context);
 });

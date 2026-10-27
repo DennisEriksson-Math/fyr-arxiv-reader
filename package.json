@@ -8,9 +8,11 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "local": "npm run build && python3 scripts/local_bridge.py"
   },
   "dependencies": {
+    "katex": "^0.19.1",
     "lucide-react": "^1.31.0",
     "parse5": "^8.0.1",
     "pdfjs-dist": "6.4.299",

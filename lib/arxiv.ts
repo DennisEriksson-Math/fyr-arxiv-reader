@@ -1,5 +1,5 @@
 /** Adapted from Fyr's arxiv_feed.py and interest_profile.py. MIT; see /FYR-LICENSE.txt. */
-import type { Paper, PaperChange, Profile, RankedPaper } from "./types";
+import type { Paper, PaperChange, Profile, ProfileSource, RankedPaper } from "./types";
 
 export const MAX_PAPERS = 8000;
 const MAX_LIST = 200;
@@ -19,6 +19,17 @@ export function baseId(value: string): string {
 export function normalizeText(value: string): string {
   return value.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("en")
     .replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+}
+
+/** Stable evidence/merge identity, preserving the user's display spelling separately. */
+export function interestKey(kind: "keyword" | "author", value: string): string {
+  if (kind === "keyword") return normalizeText(value);
+  let name = value.replace(/\[(?:also|orcid):[^\]]*\]/gi, "").split(" — ")[0].split("(")[0].trim();
+  if (name.includes(",")) {
+    const [last, first] = name.split(",", 2);
+    name = `${first.trim()} ${last.trim()}`;
+  }
+  return normalizeText(name);
 }
 
 function strings(value: unknown, count = MAX_LIST, length = MAX_TERM): string[] {
@@ -44,6 +55,36 @@ export function normalizeProfile(input: unknown): Profile {
       && term !== "__proto__" && term !== "constructor" && term !== "prototype") {
       profile.weights[term] = Math.min(100000, Math.floor(value));
     }
+  }
+  if (Array.isArray(source.sources)) {
+    const active = new Map<string, string>();
+    for (const value of [...profile.broad, ...profile.sharp]) {
+      const key = `keyword:${interestKey("keyword", value)}`;
+      if (!active.has(key)) active.set(key, value);
+    }
+    for (const value of profile.authors) {
+      const key = `author:${interestKey("author", value)}`;
+      if (!active.has(key)) active.set(key, value);
+    }
+    const evidence = new Map<string, ProfileSource>();
+    for (const raw of source.sources.slice(0, 400)) {
+      const item = record(raw);
+      if (item.kind !== "keyword" && item.kind !== "author") continue;
+      const value = string(item.value, MAX_TERM), key = `${item.kind}:${interestKey(item.kind, value)}`;
+      const current = active.get(key);
+      if (!current || (!evidence.has(key) && evidence.size >= 100)) continue;
+      const entry = evidence.get(key) || { kind: item.kind, value: current, documents: [] };
+      for (const rawDocument of Array.isArray(item.documents) ? item.documents.slice(0, 20) : []) {
+        const doc = record(rawDocument);
+        const name = (typeof doc.name === "string" ? doc.name.slice(-1000).split(/[\\/]/).pop() || "" : "")
+          .replace(/[\u0000-\u001f]/g, "").trim().slice(0, 200);
+        const excerpt = string(doc.excerpt, 1200).replace(/[\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").slice(0, 300).trim();
+        if (!name || !excerpt || entry.documents.some(d => d.name === name)) continue;
+        if (entry.documents.length < 3) entry.documents.push({ name, excerpt });
+      }
+      if (entry.documents.length) evidence.set(key, entry);
+    }
+    if (evidence.size) profile.sources = [...evidence.values()];
   }
   return profile;
 }
@@ -82,7 +123,7 @@ export function classifyPaper(paper: Paper, cutoff: string, grace: string): Pape
   return undefined;
 }
 
-function nameForms(spelling: string): string[] {
+export function nameForms(spelling: string): string[] {
   let forms: string[];
   if (spelling.includes(",")) {
     const [last, rest] = spelling.split(",", 2);
@@ -96,13 +137,13 @@ function nameForms(spelling: string): string[] {
   });
 }
 
-function authorForms(entry: string): string[] {
+export function authorForms(entry: string): string[] {
   const variants = /\[also:\s*([^\]]+)\]/i.exec(entry)?.[1].split(";") || [];
   const name = entry.replace(/\[(?:also|orcid):[^\]]*\]/gi, "").split(" — ")[0].split("(")[0].trim();
   return [name, ...variants].flatMap(nameForms);
 }
 
-function hasPhrase(blob: string, phrase: string): boolean {
+export function hasPhrase(blob: string, phrase: string): boolean {
   // Word boundaries avoid e.g. 'log' matching 'topology'. Hyphen/dash variants normalize identically.
   return Boolean(phrase) && ` ${blob} `.includes(` ${phrase} `);
 }
@@ -113,11 +154,11 @@ export function termMultiplier(saves: number): number {
 
 export function rankPartition(papers: Paper[], input: Profile): { ranked: RankedPaper[]; unmatched: Paper[] } {
   const profile = normalizeProfile(input), candidates = normalizePapers(papers);
-  const blobs = candidates.map(p => ({ title: normalizeText(p.title), full: normalizeText(`${p.title} ${p.abstract}`) }));
+  const blobs = candidates.map(p => ({ title: normalizeText(p.title), abstract: normalizeText(p.abstract) }));
   const phrases = [...profile.broad.map(phrase => ({ phrase, weight: 1 })), ...profile.sharp.map(phrase => ({ phrase, weight: 3 }))]
     .map(p => ({ ...p, norm: normalizeText(p.phrase) })).filter(p => p.norm);
   const n = candidates.length;
-  const df = phrases.map(p => blobs.filter(b => hasPhrase(b.full, p.norm)).length);
+  const df = phrases.map(p => blobs.filter(b => (hasPhrase(b.title, p.norm) || hasPhrase(b.abstract, p.norm))).length);
   const names = new Set(profile.authors.flatMap(authorForms));
   const excluded = new Set(profile.exclude_ids.map(baseId));
   const negative = profile.negative.map(normalizeText).filter(Boolean);
@@ -125,11 +166,11 @@ export function rankPartition(papers: Paper[], input: Profile): { ranked: Ranked
   candidates.forEach((paper, index) => {
     const blob = blobs[index];
     // Explicit exclusions take precedence even over followed authors and semantic discovery.
-    if (excluded.has(paper.base_id) || negative.some(term => hasPhrase(blob.full, term))) return;
+    if (excluded.has(paper.base_id) || negative.some(term => (hasPhrase(blob.title, term) || hasPhrase(blob.abstract, term)))) return;
     let score = 0;
     const matched: string[] = [];
     phrases.forEach((p, j) => {
-      if (!hasPhrase(blob.full, p.norm)) return;
+      if (!hasPhrase(blob.title, p.norm) && !hasPhrase(blob.abstract, p.norm)) return;
       const idf = Math.log(1 + (n - df[j] + 0.5) / (df[j] + 0.5));
       score += p.weight * idf * (hasPhrase(blob.title, p.norm) ? 2 : 1) * termMultiplier(profile.weights[p.phrase] || 0);
       matched.push(p.phrase);
