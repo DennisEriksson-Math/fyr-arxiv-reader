@@ -1,0 +1,55 @@
+name: Refresh arXiv mathematics
+
+on:
+  schedule:
+    - cron: '30 18 * * 1-5'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: refresh-arxiv
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch public mathematics metadata
+        run: python scripts/fetch_arxiv.py --output public/data/arxiv.json
+      - name: Commit changed cache
+        id: commit
+        shell: bash
+        run: |
+          git add -- public/data/arxiv.json
+          if git diff --cached --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Refresh public arXiv mathematics metadata'
+          git push origin HEAD:main
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: refresh
+    if: needs.refresh.outputs.changed == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # Bot-authored pushes do not start a second workflow. The reusable deploy
+    # workflow checks out main, including the metadata commit made above.
+    uses: ./.github/workflows/deploy.yml
