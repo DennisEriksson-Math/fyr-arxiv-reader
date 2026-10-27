@@ -1,7 +1,7 @@
 /** Adapted from Fyr's arxiv_feed.py and interest_profile.py. MIT; see /FYR-LICENSE.txt. */
 import type { Paper, PaperChange, Profile, RankedPaper } from "./types";
 
-const MAX_PAPERS = 3000;
+export const MAX_PAPERS = 8000;
 const MAX_LIST = 200;
 const MAX_TERM = 200;
 const ATOM = "http://www.w3.org/2005/Atom";

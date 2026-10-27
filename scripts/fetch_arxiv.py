@@ -27,7 +27,7 @@ API = "https://export.arxiv.org/api/query"
 ATOM = "http://www.w3.org/2005/Atom"
 NS = {"a": ATOM, "o": "http://a9.com/-/spec/opensearch/1.1/"}
 PAGE_SIZE = 200
-MAX_ENTRIES = 2600
+MAX_ENTRIES = 8000
 GRACE_DAYS = 4
 POLITE_PAUSE = 3.1
 RETRIES = 3
@@ -247,12 +247,12 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("public/data/arxiv.json"))
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--max-pages", type=int, help="Optional smaller scan bound (for testing); maximum 13")
+    parser.add_argument("--max-pages", type=int, help=f"Optional smaller scan bound (for testing); maximum {MAX_ENTRIES // PAGE_SIZE}")
     args = parser.parse_args(argv)
     if not 1 <= args.days <= 31:
         parser.error("--days must be between 1 and 31")
     if args.max_pages is not None and not 1 <= args.max_pages <= MAX_ENTRIES // PAGE_SIZE:
-        parser.error("--max-pages must be between 1 and 13")
+        parser.error(f"--max-pages must be between 1 and {MAX_ENTRIES // PAGE_SIZE}")
     try:
         payload = fetch(args.days, args.max_pages)
         atomic_write(args.output, payload)

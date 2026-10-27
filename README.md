@@ -20,7 +20,7 @@ The public feed scans **all mathematics** on arXiv, ordered by the most recent u
 
 Matching happens locally. Followed authors come first. Specific phrases carry more weight than broad interests, and title matches count more than abstract matches. Keeping a paper adds a small, capped boost to its matching phrases. Removed papers stay hidden until restored. Explicit phrase and paper-ID exclusions take precedence over all matches.
 
-The coverage panel reports whether the scan reached the full window. The scanner stops after 2,600 entries and marks a feed partial if the limit or an upstream error prevents complete coverage. An empty or failed initial fetch preserves an existing cache.
+The coverage panel reports whether the scan reached the full window. The scanner stops after 8,000 entries and marks a feed partial if the limit or an upstream error prevents complete coverage. An empty or failed initial fetch preserves an existing cache.
 
 ## Optional AI
 

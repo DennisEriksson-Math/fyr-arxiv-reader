@@ -1,4 +1,4 @@
-import {normalizeProfile, rankPartition, makeShortlist} from "./arxiv.ts";
+import {MAX_PAPERS, normalizeProfile, rankPartition, makeShortlist} from "./arxiv.ts";
 import type {Paper} from "./types.ts";
 
 export type AIItem = {id:string;priority:"high"|"medium"|"low";summary:string;why:string;possible_use:string;caveat:string};
@@ -7,7 +7,7 @@ const list = (v:unknown,n:number,l:number) => Array.isArray(v) ? v.slice(0,n).fi
 export function sanitizePapers(value:unknown):Paper[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
-  return value.slice(0,2600).flatMap(raw=>{
+  return value.slice(0,MAX_PAPERS).flatMap(raw=>{
     if (!raw || typeof raw !== "object") return [];
     const p=raw as Record<string,unknown>;const id=str(p.id,80);
     if (!/^(?:\d{4}\.\d{4,5}|[a-z][a-z.\-]*\/\d{7})(?:v\d+)?$/i.test(id)) return [];

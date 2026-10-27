@@ -1,8 +1,15 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {sanitizePapers,parseArray,validateAnalysis,analyzePapers} from '../lib/ai.ts';
-import {defaultProfile} from '../lib/arxiv.ts';
+import {defaultProfile,normalizePapers,rankPartition} from '../lib/arxiv.ts';
 const paper={id:'2610.12345v2',base_id:'2610.12345',title:'Hodge theory of curves',abstract:'A useful Hodge filtration.',authors:['Ada Lovelace'],published:'2026-10-20',updated:'2026-10-21',categories:['math.AG']};
+test('busy weekly feeds retain papers beyond the original scan cap through ranking and AI input',()=>{
+ const feed=Array.from({length:5000},(_,i)=>({...paper,id:`2610.${String(i).padStart(5,'0')}`,base_id:`2610.${String(i).padStart(5,'0')}`,authors:i===4999?['Emmy Noether']:['Ada Lovelace']}));
+ const normalized=normalizePapers(feed);assert.equal(normalized.length,5000);
+ const safe=sanitizePapers(normalized);assert.equal(safe.length,5000);
+ const result=rankPartition(safe,{...defaultProfile(),authors:['Emmy Noether']});
+ assert.equal(result.ranked.length,1);assert.equal(result.ranked[0].base_id,'2610.04999');
+});
 test('AI inputs retain valid public IDs, bound strings and reject links/duplicates',()=>{
  const values=sanitizePapers([paper,{...paper,id:'2610.12345v3'},{...paper,id:'https://example.com'}]);
  assert.equal(values.length,1);assert.equal(values[0].base_id,'2610.12345');
